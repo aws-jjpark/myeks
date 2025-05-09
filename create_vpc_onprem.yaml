@@ -1,0 +1,496 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template to create two VPCs connected via Transit Gateway with EC2 instance'
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      Ubuntu2204: ami-0c7217cdde317cfec
+    us-east-2:
+      Ubuntu2204: ami-0c20d88b0021158c6
+    us-west-1:
+      Ubuntu2204: ami-0ce2cb35386fc22e9
+    us-west-2:
+      Ubuntu2204: ami-016d360a89daa11ba
+    ap-northeast-1:
+      Ubuntu2204: ami-0d52744d6551d851e
+    ap-northeast-2:
+      Ubuntu2204: ami-0898b9c266ded3337
+    ap-northeast-3:
+      Ubuntu2204: ami-0c66c8e259df7ec04
+    ap-south-1:
+      Ubuntu2204: ami-0287a05f0ef0e9d9a
+    ap-southeast-1:
+      Ubuntu2204: ami-078c2bef7aaad2e93
+    ap-southeast-2:
+      Ubuntu2204: ami-0d6f74b9139d26bf1
+    ca-central-1:
+      Ubuntu2204: ami-0940df33f4d8eb18a
+    eu-central-1:
+      Ubuntu2204: ami-0faab6bdbac9486fb
+    eu-west-1:
+      Ubuntu2204: ami-0694d931cee176e7d
+    eu-west-2:
+      Ubuntu2204: ami-0505148b3591e4c07
+    eu-west-3:
+      Ubuntu2204: ami-01d21b7be69801c2f
+    sa-east-1:
+      Ubuntu2204: ami-0fb4cf3a99aa89f3b
+
+Resources:
+  # VPC-1 (CustomerVPC)
+  CustomerVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: CustomerVPC
+
+  # VPC-1 Public Subnets
+  CustomerPublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CustomerVPC
+      CidrBlock: 10.0.50.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet-A
+
+  CustomerPublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CustomerVPC
+      CidrBlock: 10.0.51.0/24
+      AvailabilityZone: !Sub ${AWS::Region}c
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet-C
+
+  # VPC-1 Private Subnets
+  CustomerPrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CustomerVPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+      Tags:
+        - Key: Name
+          Value: PrivateSubnet-A
+
+  CustomerPrivateSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CustomerVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Sub ${AWS::Region}c
+      Tags:
+        - Key: Name
+          Value: PrivateSubnet-C
+
+  # VPC-1 Internet Gateway
+  CustomerInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: CustomerVPC-IGW
+
+  CustomerIGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref CustomerVPC
+      InternetGatewayId: !Ref CustomerInternetGateway
+
+  # VPC-1 Public Route Table
+  CustomerPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CustomerVPC
+      Tags:
+        - Key: Name
+          Value: CustomerVPC-PublicRT
+
+  CustomerPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: CustomerIGWAttachment
+    Properties:
+      RouteTableId: !Ref CustomerPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref CustomerInternetGateway
+
+  # Route from Public Subnets to OnPremVPC via Transit Gateway
+  CustomerPublicToOnPremRoute:
+    Type: AWS::EC2::Route
+    DependsOn: CustomerVPCTransitGatewayAttachment
+    Properties:
+      RouteTableId: !Ref CustomerPublicRouteTable
+      DestinationCidrBlock: 10.100.0.0/16
+      TransitGatewayId: !Ref TransitGateway
+
+  CustomerPublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref CustomerPublicSubnetA
+      RouteTableId: !Ref CustomerPublicRouteTable
+
+  CustomerPublicSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref CustomerPublicSubnetC
+      RouteTableId: !Ref CustomerPublicRouteTable
+
+  # VPC-1 NAT Gateways
+  CustomerNatGatewayEIPA:
+    Type: AWS::EC2::EIP
+    DependsOn: CustomerIGWAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: CustomerVPC-NATGW-EIP-A
+
+  CustomerNatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt CustomerNatGatewayEIPA.AllocationId
+      SubnetId: !Ref CustomerPublicSubnetA
+      Tags:
+        - Key: Name
+          Value: CustomerVPC-NATGW-A
+
+  # VPC-1 Private Route Tables
+  CustomerPrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CustomerVPC
+      Tags:
+        - Key: Name
+          Value: CustomerVPC-PrivateRT-A
+
+  CustomerPrivateRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref CustomerPrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref CustomerNatGatewayA
+
+  CustomerPrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref CustomerPrivateSubnetA
+      RouteTableId: !Ref CustomerPrivateRouteTableA
+
+  CustomerPrivateRouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CustomerVPC
+      Tags:
+        - Key: Name
+          Value: CustomerVPC-PrivateRT-C
+
+  CustomerPrivateRouteC:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref CustomerPrivateRouteTableC
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref CustomerNatGatewayA  # Using NAT Gateway from AZ-A for both private subnets
+
+  CustomerPrivateSubnetCRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref CustomerPrivateSubnetC
+      RouteTableId: !Ref CustomerPrivateRouteTableC
+
+  # VPC-2 (On-PremVPC)
+  OnPremVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.100.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: On-PremVPC
+
+  # VPC-2 Public Subnet
+  OnPremPublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref OnPremVPC
+      CidrBlock: 10.100.50.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet-A
+
+  # VPC-2 Private Subnet
+  OnPremPrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref OnPremVPC
+      CidrBlock: 10.100.0.0/24
+      AvailabilityZone: !Sub ${AWS::Region}a
+      Tags:
+        - Key: Name
+          Value: PrivateSubnet-A
+
+  # VPC-2 Internet Gateway
+  OnPremInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: OnPremVPC-IGW
+
+  OnPremIGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref OnPremVPC
+      InternetGatewayId: !Ref OnPremInternetGateway
+
+  # VPC-2 Public Route Table
+  OnPremPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref OnPremVPC
+      Tags:
+        - Key: Name
+          Value: OnPremVPC-PublicRT
+
+  OnPremPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: OnPremIGWAttachment
+    Properties:
+      RouteTableId: !Ref OnPremPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref OnPremInternetGateway
+
+  # Route from Public Subnet to CustomerVPC via Transit Gateway
+  OnPremPublicToCustomerRoute:
+    Type: AWS::EC2::Route
+    DependsOn: OnPremVPCTransitGatewayAttachment
+    Properties:
+      RouteTableId: !Ref OnPremPublicRouteTable
+      DestinationCidrBlock: 10.0.0.0/16
+      TransitGatewayId: !Ref TransitGateway
+
+  OnPremPublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref OnPremPublicSubnetA
+      RouteTableId: !Ref OnPremPublicRouteTable
+
+  # VPC-2 NAT Gateway
+  OnPremNatGatewayEIPA:
+    Type: AWS::EC2::EIP
+    DependsOn: OnPremIGWAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: OnPremVPC-NATGW-EIP-A
+
+  OnPremNatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt OnPremNatGatewayEIPA.AllocationId
+      SubnetId: !Ref OnPremPublicSubnetA
+      Tags:
+        - Key: Name
+          Value: OnPremVPC-NATGW-A
+
+  # VPC-2 Private Route Table
+  OnPremPrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref OnPremVPC
+      Tags:
+        - Key: Name
+          Value: OnPremVPC-PrivateRT-A
+
+  OnPremPrivateRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref OnPremPrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref OnPremNatGatewayA
+
+  OnPremPrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref OnPremPrivateSubnetA
+      RouteTableId: !Ref OnPremPrivateRouteTableA
+
+  # Transit Gateway
+  TransitGateway:
+    Type: AWS::EC2::TransitGateway
+    Properties:
+      Description: Transit Gateway connecting CustomerVPC and OnPremVPC
+      DefaultRouteTableAssociation: enable
+      DefaultRouteTablePropagation: enable
+      Tags:
+        - Key: Name
+          Value: EKS-Hybrid-Workshop
+
+  # Transit Gateway Attachments
+  CustomerVPCTransitGatewayAttachment:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref CustomerVPC
+      SubnetIds:
+        - !Ref CustomerPrivateSubnetA
+        - !Ref CustomerPrivateSubnetC
+      Tags:
+        - Key: Name
+          Value: CustomerVPC-TGW-Attachment
+
+  OnPremVPCTransitGatewayAttachment:
+    Type: AWS::EC2::TransitGatewayAttachment
+    Properties:
+      TransitGatewayId: !Ref TransitGateway
+      VpcId: !Ref OnPremVPC
+      SubnetIds:
+        - !Ref OnPremPrivateSubnetA
+      Tags:
+        - Key: Name
+          Value: OnPremVPC-TGW-Attachment
+
+  # Routes to Transit Gateway
+  # Route from CustomerVPC to OnPremVPC via Transit Gateway
+  CustomerToOnPremRouteA:
+    Type: AWS::EC2::Route
+    DependsOn: CustomerVPCTransitGatewayAttachment
+    Properties:
+      RouteTableId: !Ref CustomerPrivateRouteTableA
+      DestinationCidrBlock: 10.100.0.0/16
+      TransitGatewayId: !Ref TransitGateway
+
+  CustomerToOnPremRouteC:
+    Type: AWS::EC2::Route
+    DependsOn: CustomerVPCTransitGatewayAttachment
+    Properties:
+      RouteTableId: !Ref CustomerPrivateRouteTableC
+      DestinationCidrBlock: 10.100.0.0/16
+      TransitGatewayId: !Ref TransitGateway
+
+  # Route from OnPremVPC to CustomerVPC via Transit Gateway
+  OnPremToCustomerRoute:
+    Type: AWS::EC2::Route
+    DependsOn: OnPremVPCTransitGatewayAttachment
+    Properties:
+      RouteTableId: !Ref OnPremPrivateRouteTableA
+      DestinationCidrBlock: 10.0.0.0/16
+      TransitGatewayId: !Ref TransitGateway
+
+  # IAM Role for EC2 Instance
+  OnPremAdminRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: onprem-admin
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Path: /
+
+  # Instance Profile for EC2 Instance
+  OnPremAdminInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref OnPremAdminRole
+
+  # Security Group for EC2 Instance
+  OnPremGPUSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for OnPrem-GPU instance
+      VpcId: !Ref OnPremVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: Allow SSH access
+      Tags:
+        - Key: Name
+          Value: OnPrem-GPU-SG
+
+  # EC2 Instance
+  OnPremGPUInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: OnPremVPCTransitGatewayAttachment
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", Ubuntu2204]
+      InstanceType: g5.2xlarge
+      SubnetId: !Ref OnPremPrivateSubnetA
+      SecurityGroupIds:
+        - !Ref OnPremGPUSecurityGroup
+      IamInstanceProfile: !Ref OnPremAdminInstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 100
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: Onprem-GPU
+
+Outputs:
+  CustomerVPCId:
+    Description: VPC ID of CustomerVPC
+    Value: !Ref CustomerVPC
+
+  OnPremVPCId:
+    Description: VPC ID of OnPremVPC
+    Value: !Ref OnPremVPC
+
+  TransitGatewayId:
+    Description: Transit Gateway ID
+    Value: !Ref TransitGateway
+
+  CustomerPublicSubnetA:
+    Description: Customer VPC Public Subnet in AZ A
+    Value: !Ref CustomerPublicSubnetA
+
+  CustomerPublicSubnetC:
+    Description: Customer VPC Public Subnet in AZ C
+    Value: !Ref CustomerPublicSubnetC
+
+  CustomerPrivateSubnetA:
+    Description: Customer VPC Private Subnet in AZ A
+    Value: !Ref CustomerPrivateSubnetA
+
+  CustomerPrivateSubnetC:
+    Description: Customer VPC Private Subnet in AZ C
+    Value: !Ref CustomerPrivateSubnetC
+
+  OnPremPublicSubnetA:
+    Description: OnPrem VPC Public Subnet in AZ A
+    Value: !Ref OnPremPublicSubnetA
+
+  OnPremPrivateSubnetA:
+    Description: OnPrem VPC Private Subnet in AZ A
+    Value: !Ref OnPremPrivateSubnetA
+    
+  OnPremGPUInstanceId:
+    Description: Instance ID of OnPrem-GPU
+    Value: !Ref OnPremGPUInstance
+  
+  OnPremGPUPrivateIP:
+    Description: Private IP of OnPrem-GPU
+    Value: !GetAtt OnPremGPUInstance.PrivateIp
